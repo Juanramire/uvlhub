@@ -21,7 +21,8 @@ from flask_login import current_user, login_required
 
 from app.modules.dataset import dataset_bp
 from app.modules.dataset.forms import DataSetForm
-from app.modules.dataset.models import DSDownloadRecord
+from app.modules.dataset.models import DSDownloadRecord, Comment
+from app import db
 from app.modules.dataset.services import (
     AuthorService,
     DataSetService,
@@ -270,3 +271,73 @@ def get_unsynchronized_dataset(dataset_id):
         abort(404)
 
     return render_template("dataset/view_dataset.html", dataset=dataset)
+
+
+@dataset_bp.route("/dataset/<int:dataset_id>/comments", methods=["GET"])
+def list_comments(dataset_id):
+    dataset = dataset_service.get_or_404(dataset_id)
+    # devolver solo comentarios de primer nivel públicos; las replies están anidadas en to_dict()
+    top_level = [c.to_dict() for c in dataset.comments if c.parent_id is None and c.is_public]
+    return jsonify({"comments": top_level}), 200
+
+
+@dataset_bp.route("/dataset/<int:dataset_id>/comments", methods=["POST"])
+@login_required
+def create_comment(dataset_id):
+    dataset = dataset_service.get_or_404(dataset_id)
+    data = request.get_json() or {}
+    content = data.get("content", "").strip()
+    parent_id = data.get("parent_id")
+
+    if not content:
+        return jsonify({"message": "Content is required"}), 400
+
+    # si se pasa parent_id, validar que existe y pertenece al mismo dataset
+    parent = None
+    if parent_id:
+        parent = Comment.query.get(parent_id)
+        if not parent or parent.dataset_id != dataset.id:
+            return jsonify({"message": "Invalid parent comment"}), 400
+
+    comment = Comment(user_id=current_user.id, dataset_id=dataset.id, parent_id=parent_id, content=content)
+    db.session.add(comment)
+    db.session.commit()
+
+    return jsonify({"comment": comment.to_dict()}), 201
+
+
+@dataset_bp.route("/comments/<int:comment_id>", methods=["DELETE"])
+@login_required
+def delete_comment(comment_id):
+    comment = Comment.query.get_or_404(comment_id)
+    dataset = dataset_service.get_or_404(comment.dataset_id)
+
+    # Permisos: autor del comentario, autor del dataset o admin
+    is_admin = getattr(current_user, "is_admin", False)
+    if not (current_user.id == comment.user_id or current_user.id == dataset.user_id or is_admin):
+        abort(403)
+
+    db.session.delete(comment)
+    db.session.commit()
+    return jsonify({"message": "Comment deleted"}), 200
+
+
+@dataset_bp.route("/comments/<int:comment_id>/moderate", methods=["PUT"])
+@login_required
+def moderate_comment(comment_id):
+    comment = Comment.query.get_or_404(comment_id)
+    dataset = dataset_service.get_or_404(comment.dataset_id)
+
+    # Solo autor del dataset o admin puede moderar (marcar is_public)
+    is_admin = getattr(current_user, "is_admin", False)
+    if not (current_user.id == dataset.user_id or is_admin):
+        abort(403)
+
+    data = request.get_json() or {}
+    is_public = data.get("is_public")
+    if is_public is None:
+        return jsonify({"message": "is_public field required"}), 400
+
+    comment.is_public = bool(is_public)
+    db.session.commit()
+    return jsonify({"comment": comment.to_dict()}), 200

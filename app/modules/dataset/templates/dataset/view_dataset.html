@@ -367,6 +367,11 @@
 <script>
     document.addEventListener('DOMContentLoaded', function () {
         feather.replace();
+
+        const commentForm = document.getElementById('comment-form');
+        if (commentForm) {
+            commentForm.addEventListener('submit', createComment);
+        }
     });
 
     var currentFileId;
@@ -492,6 +497,198 @@
             console.error('Failed to copy text: ', err);
         });
     }
+
+    function showReplyForm(parentId) {
+        document.getElementById('parent_id').value = parentId;
+        document.getElementById('comment-content').focus();
+        document.getElementById('cancel-reply').style.display = 'inline-block';
+    }
+
+    function cancelReply() {
+        document.getElementById('parent_id').value = '';
+        document.getElementById('comment-content').value = '';
+        document.getElementById('cancel-reply').style.display = 'none';
+    }
+
+    async function createComment(event) {
+        event.preventDefault();
+        const content = document.getElementById('comment-content').value.trim();
+        const parent_id = document.getElementById('parent_id').value || null;
+        if (!content) return alert('Content is required');
+
+        try {
+            const res = await fetch(`/dataset/{{ dataset.id }}/comments`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content, parent_id })
+            });
+            const data = await res.json();
+            if (res.status === 201) {
+                // Insert the new comment at top of comments-section
+                const c = data.comment;
+                const el = buildCommentElement(c);
+                const section = document.getElementById('comments-section');
+                section.insertAdjacentHTML('afterbegin', el);
+                // reset form
+                document.getElementById('comment-content').value = '';
+                cancelReply();
+            } else {
+                alert(data.message || 'Error creating comment');
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Error creating comment');
+        }
+    }
+
+    function buildCommentElement(c) {
+        // minimal HTML construction for the posted comment (no server-side rendered replies)
+        const author = (c.user_id) ? 'User' : 'Anonymous';
+        const published = new Date(c.created_at).toLocaleString();
+        const escapedContent = c.content.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return `
+            <div class="comment mb-3" id="comment-${c.id}">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div><strong>${author}</strong> <small class="text-muted"> · ${published}</small></div>
+                    <div>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteComment(${c.id})">Delete</button>
+                    </div>
+                </div>
+                <p class="mt-2 mb-1">${escapedContent}</p>
+                <div class="replies ms-3"></div>
+                <div><a href="javascript:void(0)" onclick="showReplyForm(${c.id})">Reply</a></div>
+            </div>
+        `;
+    }
+
+    async function deleteComment(commentId) {
+        if (!confirm('Delete this comment?')) return;
+        try {
+            const res = await fetch(`/comments/${commentId}`, { method: 'DELETE' });
+            if (res.status === 200) {
+                const el = document.getElementById(`comment-${commentId}`);
+                if (el) el.remove();
+            } else {
+                const d = await res.json();
+                alert(d.message || 'Error deleting comment');
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Error deleting comment');
+        }
+    }
+
+    async function toggleModerate(commentId, currentValue) {
+        // currentValue is a boolean-like string; we toggle it
+        const newValue = !(String(currentValue) === 'true');
+        try {
+            const res = await fetch(`/comments/${commentId}/moderate`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_public: newValue })
+            });
+            const d = await res.json();
+            if (res.status === 200) {
+                // quick UI feedback: remove/hide element if hidden
+                if (!d.comment.is_public) {
+                    const el = document.getElementById(`comment-${commentId}`);
+                    if (el) el.remove();
+                } else {
+                    // if published, reloading is simplest to show it consistently
+                    location.reload();
+                }
+            } else {
+                alert(d.message || 'Error moderating comment');
+            }
+        } catch (err) {
+            console.error(err);
+            alert('Error moderating comment');
+        }
+    }
 </script>
+
+<div class="card mt-4">
+    <div class="card-body">
+        <h3>Comments</h3>
+
+        <div id="comments-section">
+            {% set printed = false %}
+            {% for comment in dataset.comments %}
+                {% if comment.parent_id is none and comment.is_public %}
+                    {% set printed = true %}
+                    <div class="comment mb-3" id="comment-{{ comment.id }}">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div>
+                                <strong>
+                                    {% if comment.user and comment.user.profile %}
+                                        {{ comment.user.profile.name }} {{ comment.user.profile.surname }}
+                                    {% else %}
+                                        Anonymous
+                                    {% endif %}
+                                </strong>
+                                <small class="text-muted"> · {{ comment.created_at.strftime('%b %d, %Y %I:%M %p') }}</small>
+                            </div>
+                            <div>
+                                {% if current_user.is_authenticated and (current_user.id == comment.user_id or current_user.id == dataset.user_id or getattr(current_user, 'is_admin', False)) %}
+                                            <button class="btn btn-sm btn-outline-danger" data-comment-id="{{ comment.id }}" onclick="deleteComment(this.getAttribute('data-comment-id'))">Delete</button>
+                                        {% endif %}
+                                        {% if current_user.is_authenticated and (current_user.id == dataset.user_id or getattr(current_user, 'is_admin', False)) %}
+                                            <button class="btn btn-sm btn-outline-secondary" data-comment-id="{{ comment.id }}" data-is-public="{{ 'true' if comment.is_public else 'false' }}" onclick="toggleModerate(this.getAttribute('data-comment-id'), this.getAttribute('data-is-public') === 'true')">
+                                                {{ 'Hide' if comment.is_public else 'Publish' }}
+                                            </button>
+                                        {% endif %}
+                            </div>
+                        </div>
+
+                        <p class="mt-2 mb-1">{{ comment.content }}</p>
+
+                        <div class="replies ms-3">
+                            {% for reply in comment.replies %}
+                                {% if reply.is_public %}
+                                    <div class="comment-reply mb-2" id="comment-{{ reply.id }}">
+                                        <strong>
+                                            {% if reply.user and reply.user.profile %}
+                                                {{ reply.user.profile.name }} {{ reply.user.profile.surname }}
+                                            {% else %}
+                                                Anonymous
+                                            {% endif %}
+                                        </strong>
+                                        <small class="text-muted"> · {{ reply.created_at.strftime('%b %d, %Y %I:%M %p') }}</small>
+                                        <p class="mb-0">{{ reply.content }}</p>
+                                    </div>
+                                {% endif %}
+                            {% endfor %}
+                        </div>
+
+                        {% if current_user.is_authenticated %}
+                            <div>
+                                <a href="javascript:void(0)" onclick="showReplyForm('{{ comment.id }}')">Reply</a>
+                            </div>
+                        {% endif %}
+                    </div>
+                {% endif %}
+            {% endfor %}
+
+            {% if not printed %}
+                <p class="text-muted">No comments yet. Be the first to comment.</p>
+            {% endif %}
+        </div>
+
+        <hr>
+
+        {% if current_user.is_authenticated %}
+            <form id="comment-form">
+                 <input type="hidden" id="parent_id" name="parent_id" value="">
+                 <div class="mb-2">
+                     <textarea id="comment-content" class="form-control" rows="3" placeholder="Write a comment..."></textarea>
+                 </div>
+                 <button class="btn btn-primary btn-sm" type="submit">Post comment</button>
+                 <button class="btn btn-link btn-sm" type="button" id="cancel-reply" style="display:none" onclick="cancelReply()">Cancel reply</button>
+             </form>
+         {% else %}
+             <p><a href="{{ url_for('auth.login') }}">Log in</a> to post comments.</p>
+         {% endif %}
+    </div>
+</div>
 
 {% endblock %}

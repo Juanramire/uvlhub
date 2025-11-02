@@ -73,6 +73,7 @@ class DataSet(db.Model):
 
     ds_meta_data = db.relationship("DSMetaData", backref=db.backref("data_set", uselist=False))
     feature_models = db.relationship("FeatureModel", backref="data_set", lazy=True, cascade="all, delete")
+    comments = db.relationship("Comment", backref="data_set", lazy=True, cascade="all, delete-orphan")
 
     def name(self):
         return self.ds_meta_data.title
@@ -125,6 +126,7 @@ class DataSet(db.Model):
             "files_count": self.get_files_count(),
             "total_size_in_bytes": self.get_file_total_size(),
             "total_size_in_human_format": self.get_file_total_size_for_human(),
+            "comments": [c.to_dict() for c in self.comments],
         }
 
     def __repr__(self):
@@ -162,3 +164,34 @@ class DOIMapping(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     dataset_doi_old = db.Column(db.String(120))
     dataset_doi_new = db.Column(db.String(120))
+
+
+class Comment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    dataset_id = db.Column(db.Integer, db.ForeignKey("data_set.id"), nullable=False)
+    parent_id = db.Column(db.Integer, db.ForeignKey("comment.id"), nullable=True)
+    content = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    is_public = db.Column(db.Boolean, default=True, nullable=False)  # moderation flag
+
+    # self-referential replies
+    replies = db.relationship(
+        "Comment",
+        backref=db.backref("parent", remote_side=[id]),
+        lazy=True,
+        cascade="all, delete-orphan",
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "dataset_id": self.dataset_id,
+            "parent_id": self.parent_id,
+            "content": self.content,
+            "created_at": self.created_at,
+            "created_at_timestamp": int(self.created_at.timestamp()),
+            "is_public": self.is_public,
+            "replies": [r.to_dict() for r in self.replies],
+        }
