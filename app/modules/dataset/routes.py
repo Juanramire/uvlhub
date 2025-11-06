@@ -177,6 +177,10 @@ def delete():
 def download_dataset(dataset_id):
     dataset = dataset_service.get_or_404(dataset_id)
 
+    # incrementar contador de descargas
+    dataset.download_count = (dataset.download_count or 0) + 1
+    db.session.commit()
+
     file_path = f"uploads/user_{dataset.user_id}/dataset_{dataset.id}/"
 
     temp_dir = tempfile.mkdtemp()
@@ -233,6 +237,17 @@ def download_dataset(dataset_id):
 
     return resp
 
+@dataset_bp.route("/dataset/<int:dataset_id>/stats", methods=["GET"])
+def dataset_stats(dataset_id):
+    dataset = dataset_service.get_or_404(dataset_id)
+    views = ds_view_record_service.get_view_count(dataset.id)
+    return jsonify(
+        {
+            "dataset_id": dataset.id,
+            "download_count": dataset.download_count or 0,
+            "view_count": views,
+        }
+    ), 200
 
 @dataset_bp.route("/doi/<path:doi>/", methods=["GET"])
 def subdomain_index(doi):
